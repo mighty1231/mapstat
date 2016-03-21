@@ -70,6 +70,7 @@ int _tmain(int argc, TCHAR *argv[]) {
 	FILE *fp = freopen("result.txt", "w", stdout);
 	searchFolder(argv[1], 0);
 	fclose(fp);
+	FreeLibrary(storm);
 	return 1;
 }
 

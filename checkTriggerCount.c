@@ -4,7 +4,8 @@
 #include <strsafe.h>
 #pragma comment(lib, "User32.lib")
 
-#define STR_USAGE "USAGE: mapstat path\n"
+#define MAX_RECURSIVE_DEPTH 10
+#define STR_USAGE "USAGE: mapstat folderpath\n"
 
 typedef int (__stdcall* FUNCTYPE_SFileOpenArchive)(char *, int, int, void *);
 typedef int (__stdcall* FUNCTYPE_SFileCloseArchive)(int);
@@ -22,28 +23,29 @@ typedef int (__stdcall* FUNCTYPE_SFileGetBasePath)(char *, int);
 typedef int (__stdcall* FUNCTYPE_SFileSetBasePath)(char *);
 typedef int (__stdcall* FUNCTYPE_SFileDestroy)();
 
+FUNCTYPE_SFileCloseArchive    SFileCloseArchive;
+FUNCTYPE_SFileCloseFile       SFileCloseFile;
+FUNCTYPE_SFileDestroy         SFileDestroy;
+FUNCTYPE_SFileGetFileArchive  SFileGetFileArchive;
+FUNCTYPE_SFileGetFileSize     SFileGetFileSize;
+FUNCTYPE_SFileOpenArchive     SFileOpenArchive;
+FUNCTYPE_SFileOpenFile        SFileOpenFile;
+FUNCTYPE_SFileOpenFileEx      SFileOpenFileEx;
+FUNCTYPE_SFileReadFile        SFileReadFile;
+FUNCTYPE_SFileSetBasePath     SFileSetBasePath;
+FUNCTYPE_SFileSetFilePointer  SFileSetFilePointer;
+FUNCTYPE_SFileSetLocale       SFileSetLocale;
+FUNCTYPE_SFileGetBasePath     SFileGetBasePath;
+FUNCTYPE_SFileGetArchiveName  SFileGetArchiveName;
+FUNCTYPE_SFileGetFileName     SFileGetFileName;
+
+void searchFolder(TCHAR *szFolder, int dwLevel);
 
 int _tmain(int argc, TCHAR *argv[]) {
 	if (argc != 2) {
 		printf(STR_USAGE);
 		return -1;
 	}
-
-	FUNCTYPE_SFileCloseArchive    SFileCloseArchive;
-	FUNCTYPE_SFileCloseFile       SFileCloseFile;
-	FUNCTYPE_SFileDestroy         SFileDestroy;
-	FUNCTYPE_SFileGetFileArchive  SFileGetFileArchive;
-	FUNCTYPE_SFileGetFileSize     SFileGetFileSize;
-	FUNCTYPE_SFileOpenArchive     SFileOpenArchive;
-	FUNCTYPE_SFileOpenFile        SFileOpenFile;
-	FUNCTYPE_SFileOpenFileEx      SFileOpenFileEx;
-	FUNCTYPE_SFileReadFile        SFileReadFile;
-	FUNCTYPE_SFileSetBasePath     SFileSetBasePath;
-	FUNCTYPE_SFileSetFilePointer  SFileSetFilePointer;
-	FUNCTYPE_SFileSetLocale       SFileSetLocale;
-	FUNCTYPE_SFileGetBasePath     SFileGetBasePath;
-	FUNCTYPE_SFileGetArchiveName  SFileGetArchiveName;
-	FUNCTYPE_SFileGetFileName     SFileGetFileName;
 	HANDLE storm = LoadLibrary("storm.dll");
 	{
 		
@@ -65,34 +67,58 @@ int _tmain(int argc, TCHAR *argv[]) {
 		SFileSetLocale(0x409);
 	}
 	
+	FILE *fp = freopen("result.txt", "w", stdout);
+	searchFolder(argv[1], 0);
+	fclose(fp);
+	return 1;
+}
 
+// recursive searching
+void searchFolder(TCHAR *cPath, int dwLevel) {	
 	int hMpq, hFile;
 	int dwFileSize, dwReadLeft, dwRead, dwReadTotal;
 
 	WIN32_FIND_DATA ffd;
+	TCHAR szLocal[MAX_PATH];
 	TCHAR szDir[MAX_PATH];
 	size_t path_length;
 	HANDLE hFind = INVALID_HANDLE_VALUE;
-	
-	StringCchLength(argv[1], MAX_PATH, &path_length);
-	if (path_length > (MAX_PATH - 3)) {
-		printf("path is too long\n");
-		return -1;
+	TCHAR indentation[MAX_RECURSIVE_DEPTH*3+1];
+	{
+		if (dwLevel > MAX_RECURSIVE_DEPTH)
+			dwLevel = MAX_RECURSIVE_DEPTH;
+		memset(indentation, ' ', dwLevel*3);
+		indentation[dwLevel*3] = '\0';
 	}
-	StringCchCopy(szDir, MAX_PATH, argv[1]);
+	
+	StringCchLength(cPath, MAX_PATH, &path_length);
+	_tprintf(TEXT("%sSearching folder %s\n"), indentation, cPath);
+	if (path_length > (MAX_PATH - 3)) {
+		_tprintf(TEXT("%sPath is too long\n"), indentation);
+		return;
+	}
+	StringCchCopy(szDir, MAX_PATH, cPath);
 	StringCchCat(szDir, MAX_PATH, TEXT("\\*"));
 	hFind = FindFirstFile(szDir, &ffd);
 	if (hFind == INVALID_HANDLE_VALUE) {
-		printf("Error: FindFirstFile()\n");
-		return -1;
+		_tprintf(TEXT("%sError: FindFirstFile()\n"), indentation);
+		return;
 	}
+
+	// initialize variables used for implementation of recursion.
+	StringCchCopy(szLocal, MAX_PATH, cPath);
+	szLocal[path_length++] = '/';
 
 	do {
 		SFileDestroy();
 		if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-
+			// do not consider "." or ".." cases
+			if (ffd.cFileName[0] == '.' && (ffd.cFileName[1] == '\0' || (ffd.cFileName[1] == '.' && ffd.cFileName[2] == '\0')))
+				continue;
+			StringCchCopy(szLocal + path_length, MAX_PATH - path_length, ffd.cFileName);
+			searchFolder(szLocal, dwLevel+1);
 		} else {
-			StringCchCopy(szDir, MAX_PATH, argv[1]);
+			StringCchCopy(szDir, MAX_PATH, cPath);
 			StringCchCat(szDir, MAX_PATH, TEXT("\\"));
 			StringCchCat(szDir, MAX_PATH, ffd.cFileName);
 			if (SFileOpenArchive(szDir, 0, 0, &hMpq)) {
@@ -113,12 +139,11 @@ int _tmain(int argc, TCHAR *argv[]) {
 						// main logic for chk
 						char *curp = buf;
 						int dwTrigSize;
+						_tprintf(TEXT("%s Map[%s]\n"), indentation, ffd.cFileName);
 						while (curp >= buf && curp < buf + dwReadTotal) {
 							if (*(int *)curp == 0x47495254 /* TRIG */) {
 								dwTrigSize = *(int *)(curp+4);
-								if (dwTrigSize / 2400 > 1000) {
-									_tprintf(TEXT("Map [%s]\n  TrigCount: %d\n"), ffd.cFileName, dwTrigSize / 2400);
-								}
+								_tprintf(TEXT("%s  TRIG found: %d\n"), indentation, dwTrigSize / 2400);
 							}
 							curp += (*(int *)(curp + 4) + 8);
 						}
@@ -127,16 +152,14 @@ int _tmain(int argc, TCHAR *argv[]) {
 					SFileCloseFile(hFile);
 				}
 				else {
-					_tprintf(TEXT("Not scenario file (type 2): %s\n"), ffd.cFileName);
+					_tprintf(TEXT("%s Not scenario file (type 2): %s\n"), indentation, ffd.cFileName);
 				}
 				SFileCloseArchive(hMpq);
 			}
 			else {
-				_tprintf(TEXT("Not scenario file (type 1): %s\n"), ffd.cFileName);
+				_tprintf(TEXT("%s Not scenario file (type 1): %s\n"), indentation, ffd.cFileName);
 			}
 		}
 	} while (FindNextFile(hFind, &ffd) != 0);
 	FindClose(hFind);
-
-	return 1;
 }
